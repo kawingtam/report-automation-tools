@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.venv/
+venv/
+.env
+
+# Excel/PDF outputs
+*.xlsx
+*.xls
+*.xlsm
+*.pdf
+*.csv
+
+# Screenshots/logs
+*.png
+*.log
+
+# Mac
+.DS_Store
