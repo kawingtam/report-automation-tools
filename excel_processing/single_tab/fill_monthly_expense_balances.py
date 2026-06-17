@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Fill monthly expense values in Excel balance workbooks from a source expenditure summary workbook.
+Fill CURRENT MO. EXPENSE / balance graph workbooks from an Expenditure Summary workbook.
 
 Interactive version:
-- Prompts for source workbook, target workbook folder/files, and month if arguments are not supplied.
+- Prompts for raw Expenditure Summary workbook, input folder/files, and month if arguments are not supplied.
 - Edits workbooks in place only after validation passes.
 - Supports .xls/.xlsx/.xlsm and .lnk shortcuts on Windows through Microsoft Excel COM.
-- Handles summary workbooks by summing only task files present in the selected folder.
-- Writes an Excel processing report: balance_fill_report.xlsx
+- Handles AWARD.SUM workbooks by summing only task files present in the selected folder.
+- Writes one pretty Excel processing report: balance_fill_report.xlsx
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def normalize_task(value) -> str:
     s = normalize_text(value)
     if s.endswith(".0"):
         s = s[:-2]
-    m = re.search(r"(\d{3,5})", s)
+    m = re.search(r"(\d{1,5})", s)
     return m.group(1) if m else s
 
 
@@ -109,6 +109,22 @@ def month_matches(value, year: int, month: int) -> bool:
         try:
             parsed = dt.datetime.strptime(text.replace("/", "-"), fmt)
             return parsed.year == year and parsed.month == month
+        except ValueError:
+            continue
+    return False
+
+
+def is_any_month_header(value) -> bool:
+    """Return True if a cell looks like any month/year header, e.g. FEB-2026."""
+    if isinstance(value, (dt.datetime, dt.date)):
+        return True
+    text = normalize_text(value).lower().replace("/", "-")
+    if not text:
+        return False
+    for fmt in ("%b-%Y", "%b-%y", "%B-%Y", "%B-%y", "%Y-%m", "%m-%Y", "%m-%y"):
+        try:
+            dt.datetime.strptime(text, fmt)
+            return True
         except ValueError:
             continue
     return False
@@ -200,7 +216,7 @@ def read_balance_report(report_path: str, month_header_key: str) -> Dict[Tuple[s
 
                     if not award or not task:
                         continue
-                    if not re.fullmatch(r"[A-Z0-9]{5}", award) or not re.fullmatch(r"\d{3,5}", task):
+                    if not re.fullmatch(r"[A-Z0-9]{5}", award) or not re.fullmatch(r"\d{1,5}", task):
                         continue
 
                     key = (award, task)
@@ -233,7 +249,7 @@ def read_balance_report(report_path: str, month_header_key: str) -> Dict[Tuple[s
                     if re.fullmatch(r"[A-Za-z0-9]{5}", label):
                         current_award = normalize_award(label)
                         continue
-                    if current_award and re.fullmatch(r"\d{3,5}", label):
+                    if current_award and re.fullmatch(r"\d{1,5}", label):
                         task = normalize_task(label)
                         data[(current_award, task)] = BalanceTaskData(
                             award=current_award,
@@ -258,13 +274,13 @@ def read_balance_report(report_path: str, month_header_key: str) -> Dict[Tuple[s
 
 def parse_award_task_from_name(name: str) -> Tuple[Optional[str], Optional[str]]:
     stem = Path(name).stem.upper()
-    matches = list(re.finditer(r"([A-Z0-9]{5})[^A-Z0-9]+(\d{3,5})(?!\d)", stem))
+    matches = list(re.finditer(r"([A-Z0-9]{5})[^A-Z0-9]+(\d{1,5})(?!\d)", stem))
     if matches:
         m = matches[-1]
         return m.group(1), m.group(2)
     tokens = re.findall(r"[A-Z0-9]+", stem)
     for i in range(len(tokens) - 1):
-        if re.fullmatch(r"[A-Z0-9]{5}", tokens[i]) and re.fullmatch(r"\d{3,5}", tokens[i + 1]):
+        if re.fullmatch(r"[A-Z0-9]{5}", tokens[i]) and re.fullmatch(r"\d{1,5}", tokens[i + 1]):
             return tokens[i], tokens[i + 1]
     return None, None
 
@@ -383,48 +399,82 @@ def normalize_cell_text(value) -> str:
     return normalize_text(value).upper().replace(".", "")
 
 
-def locate_cells_excel(wb, year: int, month: int) -> Tuple[object, str, str, str, Optional[str]]:
+def locate_cells_excel(wb, year: int, month: int) -> Tuple[object, str, str, str, Optional[str], Optional[str]]:
     for ws in wb.Worksheets:
         used = ws.UsedRange
         max_row = min(used.Rows.Count, 80)
         max_col = used.Columns.Count
+
         current_row = None
         unexpended_row = None
+        budget_row = None
+
         for r in range(1, max_row + 1):
             for c in range(1, min(max_col, 20) + 1):
                 text = normalize_cell_text(ws.Cells(r, c).Value)
+
                 if text == "CURRENT MO EXPENSE":
                     current_row = r
+
                 elif text == "UNEXPENDED BALANCE":
                     unexpended_row = r
+
+                elif (
+                    text in {"BUDGET", "BUDGET AMOUNT", "TOTAL BUDGET", "AUTHORIZED BUDGET"}
+                    or ("BUDGET" in text and "PROJECTED" not in text)
+                ):
+                    if budget_row is None:
+                        budget_row = r
+
         if current_row is None or unexpended_row is None:
             continue
+
         header_row = None
         current_col = None
+
         for r in range(1, min(max_row, 30) + 1):
             for c in range(1, max_col + 1):
                 v = ws.Cells(r, c).Value
                 matched = False
+
                 if hasattr(v, "year") and hasattr(v, "month"):
                     matched = (v.year == year and v.month == month)
                 else:
                     matched = month_matches(v, year, month)
+
                 if matched:
                     header_row = r
                     current_col = c
                     break
+
             if current_col:
                 break
+
         if current_col is None:
             continue
+
         style_source = None
         for c in range(current_col - 1, 0, -1):
             v = ws.Cells(header_row, c).Value
-            if hasattr(v, "year") or month_matches(v, year, 1):
+            if is_any_month_header(v):
                 style_source = f"{excel_col(c)}{current_row}"
                 break
-        return ws, f"{excel_col(current_col)}{current_row}", f"{excel_col(current_col)}{unexpended_row}", f"{excel_col(current_col)}{header_row}", style_source
-    raise ValueError("Could not find worksheet containing CURRENT MO. EXPENSE, UNEXPENDED BALANCE, and requested month column.")
+
+        budget_cell = f"{excel_col(current_col)}{budget_row}" if budget_row else None
+
+        return (
+            ws,
+            f"{excel_col(current_col)}{current_row}",
+            f"{excel_col(current_col)}{unexpended_row}",
+            f"{excel_col(current_col)}{header_row}",
+            style_source,
+            budget_cell,
+        )
+
+    raise ValueError(
+        "Could not find worksheet containing CURRENT MO. EXPENSE, "
+        "UNEXPENDED BALANCE, and requested month column."
+    )
 
 
 def extract_award_task_from_workbook_excel(wb) -> Tuple[Optional[str], Optional[str]]:
@@ -448,7 +498,7 @@ def extract_award_task_from_workbook_excel(wb) -> Tuple[Optional[str], Optional[
                 text = normalize_text(ws.Cells(r, c).Value)
                 if not found_award and re.fullmatch(r"[A-Za-z0-9]{5}", text):
                     found_award = normalize_award(text)
-                if not found_task and re.fullmatch(r"\d{3,5}", text):
+                if not found_task and re.fullmatch(r"\d{1,5}", text):
                     found_task = normalize_task(text)
                 if found_award and found_task:
                     return found_award, found_task
@@ -494,77 +544,216 @@ def identify_award_task(workbook_path: Path, identity_path: Path) -> Tuple[str, 
     return award, task, ", ".join(source) if source else "unknown"
 
 
-def process_excel_validated(path: Path, amount: float, expected_balance: float, year: int, month: int, recalc: bool) -> Dict[str, object]:
-    """Write amount in memory, validate UNEXPENDED BALANCE, and save only if valid."""
+def process_excel_validated(
+    path: Path,
+    amount: float,
+    expected_balance: float,
+    expected_budget: Optional[float],
+    year: int,
+    month: int,
+    recalc: bool,
+) -> Dict[str, object]:
+    """
+    Fill CURRENT MO. EXPENSE first and validate UNEXPENDED BALANCE.
+
+    If the first validation fails, try updating the matching month BUDGET cell.
+    - If changing BUDGET makes validation pass, keep CURRENT MO. EXPENSE and BUDGET.
+    - If validation still fails, restore the original CURRENT MO. EXPENSE and BUDGET.
+    """
     excel, pythoncom = get_excel_app()
     wb = None
+
     try:
         wb = excel.Workbooks.Open(str(path), UpdateLinks=False, ReadOnly=False)
-        ws, current_cell, unexpended_cell, header_cell, style_source = locate_cells_excel(wb, year, month)
-        old_value = ws.Range(current_cell).Value
 
-        if style_source:
-            ws.Range(style_source).Copy()
-            ws.Range(current_cell).PasteSpecial(Paste=-4122)  # xlPasteFormats
-        ws.Range(current_cell).Value = float(amount)
+        (
+            ws,
+            current_cell,
+            unexpended_cell,
+            header_cell,
+            style_source,
+            budget_cell,
+        ) = locate_cells_excel(wb, year, month)
 
-        if recalc:
-            excel.CalculateFullRebuild()
-        else:
-            excel.Calculate()
+        current_rng = ws.Range(current_cell)
+        budget_rng = ws.Range(budget_cell) if budget_cell else None
 
-        actual_balance_raw = ws.Range(unexpended_cell).Value
-        try:
-            actual_balance = float(actual_balance_raw)
-        except Exception:
-            actual_balance = None
+        # Store formulas, not just values, so a failed validation can restore cells exactly.
+        old_current_value = current_rng.Value
+        old_current_formula = current_rng.Formula
+        old_budget_value = budget_rng.Value if budget_rng is not None else None
+        old_budget_formula = budget_rng.Formula if budget_rng is not None else None
+
+        def recalculate() -> None:
+            if recalc:
+                excel.CalculateFullRebuild()
+            else:
+                excel.Calculate()
+
+        def read_unexpended_balance() -> Optional[float]:
+            raw = ws.Range(unexpended_cell).Value
+            try:
+                return float(raw)
+            except Exception:
+                return None
+
+        def restore_original_values() -> None:
+            current_rng.Formula = old_current_formula
+            if budget_rng is not None:
+                budget_rng.Formula = old_budget_formula
+            recalculate()
+
+        def apply_current_cell_format() -> None:
+            # Apply formatting only when a change is actually kept.
+            if style_source:
+                ws.Range(style_source).Copy()
+                current_rng.PasteSpecial(Paste=-4122)  # xlPasteFormats
+                excel.CutCopyMode = False
+
+        # First attempt: fill only CURRENT MO. EXPENSE.
+        current_rng.Value = float(amount)
+        recalculate()
+
+        actual_balance = read_unexpended_balance()
 
         if actual_balance is None:
-            # Do not fill when validation cannot be read.
-            ws.Range(current_cell).Value = old_value
-            excel.Calculate()
+            restore_original_values()
             wb.Save()
             return {
                 "status": "FAIL",
                 "filled": False,
+                "budget_updated": False,
                 "sheet": ws.Name,
                 "month_cell": current_cell,
+                "budget_cell": budget_cell or "",
                 "month_header_cell": header_cell,
                 "style_source_cell": style_source or "",
                 "workbook_unexpended_balance": "",
-                "notes": f"Could not read numeric UNEXPENDED BALANCE at {unexpended_cell}; CURRENT MO. EXPENSE was not filled.",
+                "budget_trial_unexpended_balance": "",
+                "old_workbook_budget": old_budget_value if budget_rng is not None else "",
+                "new_workbook_budget": "",
+                "notes": (
+                    f"Could not read numeric UNEXPENDED BALANCE at {unexpended_cell}; "
+                    "CURRENT MO. EXPENSE and BUDGET were restored to their original values."
+                ),
             }
 
         diff = round(actual_balance - expected_balance, 2)
-        if abs(diff) > TOLERANCE:
-            ws.Range(current_cell).Value = old_value
-            excel.Calculate()
+
+        # Normal validation passed. No budget change needed.
+        if abs(diff) <= TOLERANCE:
+            apply_current_cell_format()
             wb.Save()
             return {
-                "status": "CHECK",
-                "filled": False,
+                "status": "OK",
+                "filled": True,
+                "budget_updated": False,
                 "sheet": ws.Name,
                 "month_cell": current_cell,
+                "budget_cell": budget_cell or "",
                 "month_header_cell": header_cell,
                 "style_source_cell": style_source or "",
                 "workbook_unexpended_balance": actual_balance,
-                "notes": f"Validation failed: workbook UNEXPENDED BALANCE {actual_balance:,.2f} does not match source remaining balance {expected_balance:,.2f}; CURRENT MO. EXPENSE was not filled.",
+                "budget_trial_unexpended_balance": "",
+                "old_workbook_budget": old_budget_value if budget_rng is not None else "",
+                "new_workbook_budget": "",
+                "notes": "Validated successfully; CURRENT MO. EXPENSE filled. Budget was not changed.",
             }
 
+        # If normal validation failed, try updating BUDGET.
+        if expected_budget is not None and budget_rng is not None:
+            budget_rng.Value = float(expected_budget)
+            recalculate()
+
+            budget_trial_balance = read_unexpended_balance()
+
+            if budget_trial_balance is not None:
+                budget_trial_diff = round(budget_trial_balance - expected_balance, 2)
+
+                # Budget update fixed the validation.
+                if abs(budget_trial_diff) <= TOLERANCE:
+                    apply_current_cell_format()
+                    wb.Save()
+                    return {
+                        "status": "OK",
+                        "filled": True,
+                        "budget_updated": True,
+                        "sheet": ws.Name,
+                        "month_cell": current_cell,
+                        "budget_cell": budget_cell or "",
+                        "month_header_cell": header_cell,
+                        "style_source_cell": style_source or "",
+                        "workbook_unexpended_balance": budget_trial_balance,
+                        "budget_trial_unexpended_balance": budget_trial_balance,
+                        "old_workbook_budget": old_budget_value if budget_rng is not None else "",
+                        "new_workbook_budget": expected_budget,
+                        "notes": (
+                            f"Initial validation failed: workbook UNEXPENDED BALANCE "
+                            f"{actual_balance:,.2f} did not match source remaining balance "
+                            f"{expected_balance:,.2f}. Budget was updated from "
+                            f"{safe_float(old_budget_value):,.2f} to {expected_budget:,.2f}; "
+                            "second validation passed. CURRENT MO. EXPENSE and BUDGET were both kept."
+                        ),
+                    }
+
+            # Budget update did not fix validation, or trial balance was unreadable.
+            restore_original_values()
+            wb.Save()
+
+            return {
+                "status": "CHECK",
+                "filled": False,
+                "budget_updated": False,
+                "sheet": ws.Name,
+                "month_cell": current_cell,
+                "budget_cell": budget_cell or "",
+                "month_header_cell": header_cell,
+                "style_source_cell": style_source or "",
+                "workbook_unexpended_balance": actual_balance,
+                "budget_trial_unexpended_balance": budget_trial_balance if budget_trial_balance is not None else "",
+                "old_workbook_budget": old_budget_value if budget_rng is not None else "",
+                "new_workbook_budget": "",
+                "notes": (
+                    f"Initial validation failed: workbook UNEXPENDED BALANCE "
+                    f"{actual_balance:,.2f} did not match source remaining balance "
+                    f"{expected_balance:,.2f}. Tried updating BUDGET to "
+                    f"{expected_budget:,.2f}, but validation still failed. "
+                    "CURRENT MO. EXPENSE and BUDGET were restored to their original values."
+                ),
+            }
+
+        # No budget cell found, or no expected budget available.
+        restore_original_values()
         wb.Save()
+
+        reason = "No matching BUDGET cell was found" if budget_rng is None else "No expected budget was available from source data"
+
         return {
-            "status": "OK",
-            "filled": True,
+            "status": "CHECK",
+            "filled": False,
+            "budget_updated": False,
             "sheet": ws.Name,
             "month_cell": current_cell,
+            "budget_cell": budget_cell or "",
             "month_header_cell": header_cell,
             "style_source_cell": style_source or "",
             "workbook_unexpended_balance": actual_balance,
-            "notes": "Validated successfully; CURRENT MO. EXPENSE filled.",
+            "budget_trial_unexpended_balance": "",
+            "old_workbook_budget": old_budget_value if budget_rng is not None else "",
+            "new_workbook_budget": "",
+            "notes": (
+                f"Validation failed: workbook UNEXPENDED BALANCE {actual_balance:,.2f} "
+                f"does not match source remaining balance {expected_balance:,.2f}. "
+                f"{reason}, so BUDGET was not changed. CURRENT MO. EXPENSE was restored."
+            ),
         }
+
     finally:
         if wb is not None:
-            wb.Close(SaveChanges=True)
+            # Any successful/intentional change is saved explicitly with wb.Save().
+            # This close call prevents accidental partial edits from being saved after errors.
+            wb.Close(SaveChanges=False)
+
         excel.Quit()
         pythoncom.CoUninitialize()
 
@@ -600,8 +789,10 @@ def write_processing_report(output_dir: str, rows: List[Dict[str, object]]) -> s
     path = os.path.join(output_dir, "balance_fill_report.xlsx")
     headers = [
         "status", "filled", "file_type", "path", "award", "task", "tasks_found",
-        "month_actual", "expected_remaining_balance", "workbook_unexpended_balance",
-        "difference", "target_sheet", "month_cell", "month_header_cell", "style_source_cell",
+        "month_actual", "expected_budget", "expected_remaining_balance",
+        "workbook_unexpended_balance", "budget_trial_unexpended_balance",
+        "difference", "budget_updated", "old_workbook_budget", "new_workbook_budget",
+        "target_sheet", "month_cell", "budget_cell", "month_header_cell", "style_source_cell",
         "task_totals", "notes"
     ]
     wb = Workbook()
@@ -748,10 +939,11 @@ def main() -> int:
                     raise KeyError(f"SUM {award}: task file(s) present but missing from source data: {', '.join(missing_from_source)}")
 
                 month_actual = round(sum(source_index[(award, t)].month_actual for t in folder_tasks), 2)
+                expected_budget = round(sum(source_index[(award, t)].budget for t in folder_tasks), 2)
                 expected_remaining = round(sum(source_index[(award, t)].remaining_balance for t in folder_tasks), 2)
                 raw_tasks_for_award = sorted({t for (a, t) in source_index if a == award}, key=lambda x: int(x) if x.isdigit() else x)
                 skipped = [t for t in raw_tasks_for_award if t not in folder_tasks]
-                result = process_excel_validated(path, month_actual, expected_remaining, year, month, args.recalc)
+                result = process_excel_validated(path, month_actual, expected_remaining, expected_budget, year, month, args.recalc)
                 diff = ""
                 if isinstance(result.get("workbook_unexpended_balance"), (int, float)):
                     diff = f"{round(float(result['workbook_unexpended_balance']) - expected_remaining, 2):.2f}"
@@ -760,13 +952,29 @@ def main() -> int:
                     notes += f" Skipped source task(s) not present in selected folder: {', '.join(skipped)}."
                 task_totals = "; ".join(f"{t}:{source_index[(award,t)].month_actual:.2f}" for t in folder_tasks)
                 report_rows.append({
-                    "status": result["status"], "filled": "YES" if result["filled"] else "NO", "file_type": "SUM",
-                    "path": str(path), "award": award, "task": "SUM", "tasks_found": len(folder_tasks),
-                    "month_actual": f"{month_actual:.2f}", "expected_remaining_balance": f"{expected_remaining:.2f}",
-                    "workbook_unexpended_balance": result.get("workbook_unexpended_balance", ""), "difference": diff,
-                    "target_sheet": result.get("sheet", ""), "month_cell": result.get("month_cell", ""),
-                    "month_header_cell": result.get("month_header_cell", ""), "style_source_cell": result.get("style_source_cell", ""),
-                    "task_totals": task_totals, "notes": notes,
+                    "status": result["status"], 
+                    "filled": "YES" if result["filled"] else "NO", 
+                    "file_type": "SUM",
+                    "path": str(path), 
+                    "award": award, 
+                    "task": "SUM", 
+                    "tasks_found": len(folder_tasks),
+                    "month_actual": f"{month_actual:.2f}",
+                    "expected_budget": f"{expected_budget:.2f}",
+                    "expected_remaining_balance": f"{expected_remaining:.2f}",
+                    "workbook_unexpended_balance": result.get("workbook_unexpended_balance", ""),
+                    "budget_trial_unexpended_balance": result.get("budget_trial_unexpended_balance", ""),
+                    "difference": diff,
+                    "budget_updated": "YES" if result.get("budget_updated") else "NO",
+                    "old_workbook_budget": result.get("old_workbook_budget", ""),
+                    "new_workbook_budget": result.get("new_workbook_budget", ""),
+                    "target_sheet": result.get("sheet", ""),
+                    "month_cell": result.get("month_cell", ""),
+                    "budget_cell": result.get("budget_cell", ""),
+                    "month_header_cell": result.get("month_header_cell", ""),
+                    "style_source_cell": result.get("style_source_cell", ""),
+                    "task_totals": task_totals, 
+                    "notes": notes,
                 })
                 print(f"[{result['status']}] {path.name} | {award}/SUM | amount {month_actual:,.2f} | filled={result['filled']}")
                 if result["status"] != "OK":
@@ -778,7 +986,15 @@ def main() -> int:
                 raise KeyError(f"No source data found for award/task {award}/{task}.")
             pdata = source_index[(award, task)]
 
-            result = process_excel_validated(path, pdata.month_actual, pdata.remaining_balance, year, month, args.recalc)
+            result = process_excel_validated(
+                path,
+                pdata.month_actual,
+                pdata.remaining_balance,
+                pdata.budget,
+                year,
+                month,
+                args.recalc,
+            )
             diff = ""
             if isinstance(result.get("workbook_unexpended_balance"), (int, float)):
                 diff = f"{round(float(result['workbook_unexpended_balance']) - pdata.remaining_balance, 2):.2f}"
@@ -786,13 +1002,29 @@ def main() -> int:
             if award in sum_awards:
                 notes += f" SUM workbook exists for award {award}; this task workbook is still validated and filled independently."
             report_rows.append({
-                "status": result["status"], "filled": "YES" if result["filled"] else "NO", "file_type": "TASK",
-                "path": str(path), "award": award, "task": task, "tasks_found": "",
-                "month_actual": f"{pdata.month_actual:.2f}", "expected_remaining_balance": f"{pdata.remaining_balance:.2f}",
-                "workbook_unexpended_balance": result.get("workbook_unexpended_balance", ""), "difference": diff,
-                "target_sheet": result.get("sheet", ""), "month_cell": result.get("month_cell", ""),
-                "month_header_cell": result.get("month_header_cell", ""), "style_source_cell": result.get("style_source_cell", ""),
-                "task_totals": "", "notes": notes,
+                "status": result["status"], 
+                "filled": "YES" if result["filled"] else "NO", 
+                "file_type": "TASK",
+                "path": str(path), 
+                "award": award, 
+                "task": task, 
+                "tasks_found": "",
+                "month_actual": f"{pdata.month_actual:.2f}",
+                "expected_budget": f"{pdata.budget:.2f}",
+                "expected_remaining_balance": f"{pdata.remaining_balance:.2f}",
+                "workbook_unexpended_balance": result.get("workbook_unexpended_balance", ""),
+                "budget_trial_unexpended_balance": result.get("budget_trial_unexpended_balance", ""),
+                "difference": diff,
+                "budget_updated": "YES" if result.get("budget_updated") else "NO",
+                "old_workbook_budget": result.get("old_workbook_budget", ""),
+                "new_workbook_budget": result.get("new_workbook_budget", ""),
+                "target_sheet": result.get("sheet", ""),
+                "month_cell": result.get("month_cell", ""),
+                "budget_cell": result.get("budget_cell", ""),
+                "month_header_cell": result.get("month_header_cell", ""),
+                "style_source_cell": result.get("style_source_cell", ""),
+                "task_totals": "", 
+                "notes": notes,
             })
             print(f"[{result['status']}] {path.name} | {award}/{task} | amount {pdata.month_actual:,.2f} | filled={result['filled']}")
             if result["status"] != "OK":

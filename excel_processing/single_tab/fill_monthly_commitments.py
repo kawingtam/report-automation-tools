@@ -704,12 +704,40 @@ def process_sum_openpyxl(path, report_df, month_label, selected_tasks=None):
 
     tasks = sorted(tasks, key=lambda x: int(x) if str(x).isdigit() else str(x))
     if not tasks:
-        raise KeyError(
-            f'No selected task workbooks in the input folder matched raw commitment rows for SUM award {award}. '
+        warnings = [
+            f'{award}.SUM: no raw commitment rows found for the selected task workbook(s); '
+            f'wrote 0 instead of marking as error. '
             f'Selected tasks: {sorted(selected_tasks) if selected_tasks is not None else "ALL"}; '
             f'raw tasks: {sorted(raw_tasks)}.'
-        )
+        ]
 
+        # Clear old SUM commitment detail blocks so old data does not remain.
+        for block_index in range(8):
+            clear_block(commit_ws, 6 + block_index * 35)
+
+        # Fill graph CURRENT MO. COMMIT cell with 0.
+        graph_ws, graph_row_idx, graph_col_idx, graph_title, header_cell, target_cell = locate_graph_commit_cell_openpyxl(wb, month_label)
+        graph_ws.cell(graph_row_idx, graph_col_idx).value = 0.0
+
+        wb.save(path)
+
+        return {
+            'path': path,
+            'award': award,
+            'task': 'SUM',
+            'file_type': 'SUM',
+            'entries': 0,
+            'total': 0.0,
+            'calc_total': 0.0,
+            'difference': 0.0,
+            'status': 'OK',
+            'target_cell': target_cell,
+            'used_value_cells': '',
+            'warnings': warnings,
+            'detail_written': True,
+            'task_totals': '',
+            'tasks_found': 0,
+        }
     total_report = 0.0
     total_displayed = 0.0
     warnings = []
@@ -936,11 +964,43 @@ def process_sum_excel_com(path, report_df, month_label, selected_tasks=None, rec
 
         tasks = sorted(tasks, key=lambda x: int(x) if str(x).isdigit() else str(x))
         if not tasks:
-            raise KeyError(
-                f'No selected task workbooks in the input folder matched raw commitment rows for SUM award {award}. '
+            warnings = [
+                f'{award}.SUM: no raw commitment rows found for the selected task workbook(s); '
+                f'wrote 0 instead of marking as error. '
                 f'Selected tasks: {sorted(selected_tasks) if selected_tasks is not None else "ALL"}; '
                 f'raw tasks: {sorted(raw_tasks)}.'
-            )
+            ]
+
+            # Clear old SUM commitment detail blocks so old data does not remain.
+            for block_index in range(8):
+                clear_block_excel(commit_ws, 6 + block_index * 35)
+
+            # Fill graph CURRENT MO. COMMIT cell with 0.
+            graph_ws, target_cell, graph_title, header_cell = locate_graph_commit_cell_excel(wb, month_label)
+            graph_ws.Range(target_cell).Value = 0.0
+
+            if recalc:
+                excel.CalculateFull()
+
+            wb.Save()
+
+            return {
+                'path': path,
+                'award': award,
+                'task': 'SUM',
+                'file_type': 'SUM',
+                'entries': 0,
+                'total': 0.0,
+                'calc_total': 0.0,
+                'difference': 0.0,
+                'status': 'OK',
+                'target_cell': target_cell,
+                'used_value_cells': '',
+                'warnings': warnings,
+                'detail_written': True,
+                'task_totals': '',
+                'tasks_found': 0,
+            }
 
         total_report = 0.0
         total_displayed = 0.0
@@ -1269,9 +1329,7 @@ def read_commitment_report(report_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-    description="Fill commitment detail tables and monthly commitment cells from a source commitment report."
-    )
+    parser = argparse.ArgumentParser(description='Fill commitment tabs and graph CURRENT MO. COMMIT cells from a raw Commt PO Report.')
     parser.add_argument('--commit-report', help='Path to the raw commitment report workbook (.xlsx).')
     parser.add_argument('--inputs', nargs='+', help='One or more input Excel files, shortcuts, or directories.')
     parser.add_argument('--month', help='Month label like mar-2026. Used to locate the graph column to fill.')
@@ -1281,7 +1339,7 @@ def main():
     args = parser.parse_args()
 
     if not args.commit_report:
-        args.commit_report = strip_quotes(input('Enter FULL path to source commitment report Excel: '))
+        args.commit_report = strip_quotes(input('Enter FULL path to raw Commitment PO Report Excel: '))
     else:
         args.commit_report = strip_quotes(args.commit_report)
 

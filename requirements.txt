@@ -3,3 +3,4 @@ openpyxl
 selenium
 webdriver-manager
 PyMuPDF
+pywin32; platform_system == "Windows"

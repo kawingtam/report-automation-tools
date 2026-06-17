@@ -2,21 +2,44 @@
 __pycache__/
 *.pyc
 
-# Environment
+# Virtual environments
 .venv/
 venv/
 .env
 
-# Excel/PDF outputs
+# Private config
+config.yaml
+config.json
+*.secret
+
+# Excel / PDF / CSV data files
 *.xlsx
 *.xls
 *.xlsm
-*.pdf
 *.csv
+*.pdf
 
-# Screenshots/logs
+# Allow future public sample files if you create them
+!sample_data/
+!sample_data/*.xlsx
+!sample_data/*.csv
+!sample_data/*.pdf
+
+# Outputs and logs
+outputs/
+downloads/
+logs/
+*_report.xlsx
+*_SUMMARY_*.xlsx
+PTA SUMMARY_*.xlsx
+OD_SUMMARY_*.xlsx
+commit_fill_report.xlsx
+balance_fill_report.xlsx
+
+# Screenshots / debug files
 *.png
 *.log
 
-# Mac
+# OS files
 .DS_Store
+Thumbs.db
